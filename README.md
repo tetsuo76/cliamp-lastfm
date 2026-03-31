@@ -5,3 +5,5 @@ https://www.last.fm/api/authentication
 
 Useful python app to obtain your SESSION_KEY:
 https://github.com/TheMemoman/lastfm_Get_Session_Key
+
+Edit [lastfm.lua](https://github.com/tetsuo76/cliamp-lastfm/blob/main/lastfm.lua), replace the values of `API_KEY`, `API_SECRET` and `SESSION_KEY` with your own and place it under the `./config/cliamp/plugins/` directory.

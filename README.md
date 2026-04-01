@@ -1,4 +1,6 @@
-Simple last.fm plugin for cliamp
+![scrobbling in cliamp](https://github.com/tetsuo76/cliamp-lastfm/blob/main/screenshot.png?raw=true)
+
+Simple last.fm plugin for [cliamp](https://github.com/bjarneo/cliamp)
 
 Info about last.fm authentication (in order to create your API_KEY and API_SECRET):
 https://www.last.fm/api/authentication

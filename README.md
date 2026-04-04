@@ -10,4 +10,4 @@ https://github.com/TheMemoman/lastfm_Get_Session_Key
 
 Edit [lastfm.lua](https://github.com/tetsuo76/cliamp-lastfm/blob/main/lastfm.lua), replace the values of `API_KEY`, `API_SECRET` and `SESSION_KEY` with your own and place it under the `./config/cliamp/plugins/` directory.
 
-Testing with cliamp v1.31.6
+Tested with cliamp v1.31.6

@@ -1,7 +1,7 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.0.0",
+    version = "1.0.1",
     description = "Scrobbles the current track to last.fm",
 })
 
@@ -54,27 +54,36 @@ local function do_scrobble(track, timestamp)
                      "&api_sig=" .. urlencode(sig) ..
                      "&format=json"
 
-    cliamp.http.post(API_URL, {
+    -- Synchronous call returning response and status
+    local response, status = cliamp.http.post(API_URL, {
         body = body_str,
         headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
     })
-    print("[Last.fm] Scrobble Sent: " .. artist .. " - " .. title)
+
+    -- UI NOTIFICATION: Concise message at the bottom
+    if tostring(status) == "200" then
+        print("\27[s\27[999;1H[Last.fm] Scrobble Sent: " .. artist .. " - " .. title .. "\27[u")
+    else
+        print("\27[s\27[999;1H[Last.fm] Error: HTTP " .. tostring(status) .. "\27[u")
+    end
 end
 
 p:on("track.change", function(track)
     if not track then return end
 
-    -- 1. Cancel previous timer if you skipped a song early
+    -- Cancel previous timer if you skipped a song early
     if current_timer_id then
         cliamp.timer.cancel(current_timer_id)
     end
 
     local start_time = os.time()
-    print("[Last.fm] Track detected. Scrobbling in 60s...")
+    -- Use the ANSI escape codes to force the message to the bottom
+    print("\27[s\27[999;1H[Last.fm] Track detected. Scrobbling in 60s...\27[u")
 
     current_timer_id = cliamp.timer.after(60.0, function()
         do_scrobble(track, start_time)
-        current_timer_id = nil -- Clear ID after firing
+        current_timer_id = nil 
     end)
 end)
+
 

@@ -1,7 +1,7 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.0.1",
+    version = "1.1.0",
     description = "Scrobbles the current track to last.fm",
 })
 
@@ -9,10 +9,9 @@ local API_KEY = "YOUR_API_KEY"
 local API_SECRET = "YOUR_API_SECRET"
 local SESSION_KEY = "YOUR_SESSION_KEY"
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
+local has_scrobbled_current = false
 
 -- INTERNAL STATE
-local current_timer_id = nil
-
 local function urlencode(str)
     if not str then return "" end
     str = string.gsub(str, "([^%w%.%- ])", function(c)
@@ -62,28 +61,35 @@ local function do_scrobble(track, timestamp)
 
     -- UI NOTIFICATION: Concise message at the bottom
     if tostring(status) == "200" then
-        print("\27[s\27[999;1H[Last.fm] Scrobble Sent: " .. artist .. " - " .. title .. "\27[u")
+        print("\27[s\27[999;1H[last.fm] Scrobble Sent: " .. artist .. " - " .. title .. "\27[u")
     else
-        print("\27[s\27[999;1H[Last.fm] Error: HTTP " .. tostring(status) .. "\27[u")
+        cliamp.log.error("last.fm scrobble failed: " .. tostring(status))
+        print("\27[s\27[999;1H[last.fm] Error: HTTP " .. tostring(status) .. "\27[u")
     end
 end
 
+-- Reset state whenever a NEW playback instance starts
 p:on("track.change", function(track)
-    if not track then return end
-
-    -- Cancel previous timer if you skipped a song early
-    if current_timer_id then
-        cliamp.timer.cancel(current_timer_id)
-    end
-
-    local start_time = os.time()
-    -- Use the ANSI escape codes to force the message to the bottom
-    print("\27[s\27[999;1H[Last.fm] Track detected. Scrobbling in 60s...\27[u")
-
-    current_timer_id = cliamp.timer.after(60.0, function()
-        do_scrobble(track, start_time)
-        current_timer_id = nil 
-    end)
+    has_scrobbled_current = false
 end)
 
+-- Catch natural ends via playback position
+p:on("playback.state", function(data)
+    if data.status == "playing" and data.duration > 0 then
+        -- Threshold check: within 1 second of the end
+        if data.position >= (data.duration - 1) then
+            if not has_scrobbled_current then
+                do_scrobble(data, os.time())
+                has_scrobbled_current = true
+            end
+        end
+    end
+end)
 
+-- Use track.scrobble for manual skips/milestones (Track played >= 50% or >= 4 min)
+p:on("track.scrobble", function(track)
+    if not has_scrobbled_current then
+        do_scrobble(track, os.time())
+        has_scrobbled_current = true
+    end
+end)

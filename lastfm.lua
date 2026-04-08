@@ -1,7 +1,7 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.1.0",
+    version = "1.1.1",
     description = "Scrobbles the current track to last.fm",
 })
 
@@ -9,7 +9,14 @@ local API_KEY = "YOUR_API_KEY"
 local API_SECRET = "YOUR_API_SECRET"
 local SESSION_KEY = "YOUR_SESSION_KEY"
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
+
 local has_scrobbled_current = false
+
+-- Helper to safely handle properties vs functions
+local function get(val)
+    if type(val) == "function" then return val() end
+    return val
+end
 
 -- INTERNAL STATE
 local function urlencode(str)
@@ -63,32 +70,35 @@ local function do_scrobble(track, timestamp)
     if tostring(status) == "200" then
         print("\27[s\27[999;1H[last.fm] Scrobble Sent: " .. artist .. " - " .. title .. "\27[u")
     else
-        cliamp.log.error("last.fm scrobble failed: " .. tostring(status))
+        cliamp.log.warn("last.fm scrobble failed: " .. tostring(status))
         print("\27[s\27[999;1H[last.fm] Error: HTTP " .. tostring(status) .. "\27[u")
     end
 end
 
--- Reset state whenever a NEW playback instance starts
+-- Catch natural ends via playback position
 p:on("track.change", function(track)
     has_scrobbled_current = false
 end)
 
--- Catch natural ends via playback position
 p:on("playback.state", function(data)
-    if data.status == "playing" and data.duration > 0 then
-        -- Threshold check: within 1 second of the end
-        if data.position >= (data.duration - 1) then
-            if not has_scrobbled_current then
-                do_scrobble(data, os.time())
-                has_scrobbled_current = true
-            end
+    local dur = get(cliamp.player.duration) or 0
+
+    -- Added Check: Track must be >= 30 seconds
+    if not has_scrobbled_current and dur >= 30 and data.status == "playing" then
+
+        -- Natural end check
+        if data.position >= (dur - 1.5) then
+            do_scrobble(data, os.time())
+            has_scrobbled_current = true
         end
     end
 end)
 
--- Use track.scrobble for manual skips/milestones (Track played >= 50% or >= 4 min)
 p:on("track.scrobble", function(track)
-    if not has_scrobbled_current then
+    -- Check global duration again for the 30s rule backup
+    local dur = get(cliamp.player.duration) or 0
+
+    if not has_scrobbled_current and dur >= 30 then
         do_scrobble(track, os.time())
         has_scrobbled_current = true
     end

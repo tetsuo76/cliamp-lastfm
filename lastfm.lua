@@ -1,7 +1,7 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.1.1",
+    version = "1.2.0",
     description = "Scrobbles the current track to last.fm",
 })
 
@@ -9,7 +9,6 @@ local API_KEY = "YOUR_API_KEY"
 local API_SECRET = "YOUR_API_SECRET"
 local SESSION_KEY = "YOUR_SESSION_KEY"
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
-
 local has_scrobbled_current = false
 
 -- Helper to safely handle properties vs functions
@@ -68,10 +67,10 @@ local function do_scrobble(track, timestamp)
 
     -- UI NOTIFICATION: Concise message at the bottom
     if tostring(status) == "200" then
-        print("\27[s\27[999;1H[last.fm] Scrobble Sent: " .. artist .. " - " .. title .. "\27[u")
+        cliamp.message("Scrobble Sent: " .. artist .. " - " .. title, 5)          
     else
         cliamp.log.warn("last.fm scrobble failed: " .. tostring(status))
-        print("\27[s\27[999;1H[last.fm] Error: HTTP " .. tostring(status) .. "\27[u")
+        cliamp.message("[last.fm] Error: HTTP " .. tostring(status), 5)
     end
 end
 
@@ -103,3 +102,4 @@ p:on("track.scrobble", function(track)
         has_scrobbled_current = true
     end
 end)
+

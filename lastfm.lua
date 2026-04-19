@@ -1,13 +1,13 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.2.0",
+    version = "1.2.1",
     description = "Scrobbles the current track to last.fm",
 })
 
-local API_KEY = "YOUR_API_KEY"
-local API_SECRET = "YOUR_API_SECRET"
-local SESSION_KEY = "YOUR_SESSION_KEY"
+local api_key = p:config("api_key")
+local api_secret = p:config("api_secret")
+local session_key = p:config("session_key")
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
 local has_scrobbled_current = false
 
@@ -32,7 +32,7 @@ local function get_api_sig(params)
     table.sort(keys)
     local str = ""
     for _, k in ipairs(keys) do str = str .. k .. params[k] end
-    str = str .. API_SECRET
+    str = str .. api_secret
     return cliamp.crypto.md5(str)
 end
 
@@ -42,8 +42,8 @@ local function do_scrobble(track, timestamp)
 
     local params = {
         method = "track.scrobble",
-        api_key = API_KEY,
-        sk = SESSION_KEY,
+        api_key = api_key,
+        sk = session_key,
         artist = artist,
         track = title,
         timestamp = tostring(timestamp)
@@ -51,8 +51,8 @@ local function do_scrobble(track, timestamp)
 
     local sig = get_api_sig(params)
     local body_str = "method=track.scrobble" ..
-                     "&api_key=" .. urlencode(API_KEY) ..
-                     "&sk=" .. urlencode(SESSION_KEY) ..
+                     "&api_key=" .. urlencode(api_key) ..
+                     "&sk=" .. urlencode(session_key) ..
                      "&artist=" .. urlencode(artist) ..
                      "&track=" .. urlencode(title) ..
                      "&timestamp=" .. urlencode(tostring(timestamp)) ..

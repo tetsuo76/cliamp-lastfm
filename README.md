@@ -1,6 +1,6 @@
 ![scrobbling in cliamp](https://github.com/tetsuo76/cliamp-lastfm/blob/main/screenshot.png?raw=true)
 
-Simple last.fm plugin v1.2.1 for [cliamp](https://github.com/bjarneo/cliamp)
+Simple last.fm plugin v1.3.0 for [cliamp](https://github.com/bjarneo/cliamp)
 
 Info about last.fm authentication (in order to create your API_KEY and API_SECRET):
 https://www.last.fm/api/authentication
@@ -16,11 +16,12 @@ Installation/Config:
 
 ```
 [plugins.lastfm]
-api_key = "API_KEY_GOES_HERE"
-api_secret = "API_SECRET_HERE"
-session_key = "SESSION_KEY_GOES_HERE"
+api_key = "API_KEY"
+api_secret = "API_SECRET"
+session_key = "SESSION_KEY"
+username = "LASTFM_USERNAME"
 ```
 
-- Replace API_KEY, API_SECRET and SESSION_KEY with your own.
+- Replace API_KEY, API_SECRET, SESSION_KEY and LASTFM_USERNAME username with your own.
 
-Tested with cliamp v1.37.0
+Tested with cliamp v1.39.0

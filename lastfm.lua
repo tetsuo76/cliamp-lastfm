@@ -1,15 +1,18 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.2.1",
+    version = "1.3.0",
     description = "Scrobbles the current track to last.fm",
 })
 
 local api_key = p:config("api_key")
 local api_secret = p:config("api_secret")
 local session_key = p:config("session_key")
+local username = p:config("username")
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
 local has_scrobbled_current = false
+local session_scrobbles = 0
+local message_duration = 10
 
 -- Helper to safely handle properties vs functions
 local function get(val)
@@ -24,6 +27,14 @@ local function urlencode(str)
         return string.format("%%%02X", string.byte(c))
     end)
     return string.gsub(str, " ", "+")
+end
+
+local function format_number(num)
+    if type(num) ~= "number" then return tostring(num) end
+    local str = tostring(num)
+    local formatted = str:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    if formatted:sub(1,1) == "," then formatted = formatted:sub(2) end
+    return formatted
 end
 
 local function get_api_sig(params)
@@ -67,10 +78,30 @@ local function do_scrobble(track, timestamp)
 
     -- UI NOTIFICATION: Concise message at the bottom
     if tostring(status) == "200" then
-        cliamp.message("Scrobble Sent: " .. artist .. " - " .. title, 5)          
+        session_scrobbles = session_scrobbles + 1
+        local stats = ""
+        if username then
+            local query = "method=user.getInfo&api_key=" .. urlencode(api_key) .. "&user=" .. urlencode(username) .. "&format=json"
+            local response2, status2 = cliamp.http.get(API_URL .. "?" .. query)
+            local total_tracks = "?"
+            local total_artists = "?"
+            if tostring(status2) == "200" then
+                local data = cliamp.json.decode(response2)
+                if data and data.user then
+                    total_tracks = tostring(data.user.playcount or "?")
+                    total_artists = tostring(data.user.artist_count or "?")
+                    if total_tracks ~= "?" then total_tracks = format_number(tonumber(total_tracks)) end
+                    if total_artists ~= "?" then total_artists = format_number(tonumber(total_artists)) end
+                end
+            end
+            stats = " [Tracks: " .. total_tracks .. " | Artists: " .. total_artists .. " | Session: " .. format_number(session_scrobbles) .. "]"
+        else
+            stats = " [No username set in config.toml]"
+        end
+        cliamp.message("Scrobble Sent: " .. artist .. " - " .. title .. stats, message_duration)          
     else
         cliamp.log.warn("last.fm scrobble failed: " .. tostring(status))
-        cliamp.message("[last.fm] Error: HTTP " .. tostring(status), 5)
+        cliamp.message("[last.fm] Error: HTTP " .. tostring(status), message_duration)
     end
 end
 

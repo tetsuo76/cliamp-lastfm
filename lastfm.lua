@@ -100,8 +100,12 @@ local function do_scrobble(track, timestamp)
         end
         cliamp.message("Scrobble Sent: " .. artist .. " - " .. title .. stats, message_duration)          
     else
-        cliamp.log.warn("last.fm scrobble failed: " .. tostring(status))
-        cliamp.message("[last.fm] Error: HTTP " .. tostring(status), message_duration)
+        local error_detail = "status=" .. tostring(status)
+        if response then
+            error_detail = error_detail .. ", response=" .. tostring(response)
+        end
+        cliamp.log.warn("last.fm scrobble failed: " .. error_detail)
+        cliamp.message("[last.fm] Unable to scrobble now. Check your connection or last.fm status.", message_duration)
     end
 end
 

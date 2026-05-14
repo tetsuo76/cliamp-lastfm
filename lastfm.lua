@@ -47,6 +47,32 @@ local function get_api_sig(params)
     return cliamp.crypto.md5(str)
 end
 
+local function check_track_loved(track)
+    if not username then return end
+    
+    local artist = track.artist or track.Artist or ""
+    local title = track.title or track.Title or ""
+    
+    if artist == "" or title == "" then return end
+    
+    -- Call track.getInfo to check if loved
+    local query = "method=track.getInfo" ..
+                  "&api_key=" .. urlencode(api_key) ..
+                  "&artist=" .. urlencode(artist) ..
+                  "&track=" .. urlencode(title) ..
+                  "&username=" .. urlencode(username) ..
+                  "&format=json"
+    
+    local response, status = cliamp.http.get(API_URL .. "?" .. query)
+    
+    if tostring(status) == "200" then
+        local data = cliamp.json.decode(response)
+        if data and data.track and data.track.userloved == "1" then
+            cliamp.message("♥ Loved Track: " .. artist .. " - " .. title, message_duration)
+        end
+    end
+end
+
 local function do_scrobble(track, timestamp)
     local artist = track.artist or track.Artist or "Unknown"
     local title = track.title or track.Title or "Unknown"
@@ -112,6 +138,7 @@ end
 -- Catch natural ends via playback position
 p:on("track.change", function(track)
     has_scrobbled_current = false
+    check_track_loved(track)
 end)
 
 p:on("playback.state", function(data)

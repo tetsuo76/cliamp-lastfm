@@ -1,8 +1,9 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.3.0",
+    version = "1.4.0",
     description = "Scrobbles the current track to last.fm",
+    permissions = {"keymap"},
 })
 
 local api_key = p:config("api_key")
@@ -70,6 +71,154 @@ local function check_track_loved(track)
         if data and data.track and data.track.userloved == "1" then
             cliamp.message("♥ Loved Track: " .. artist .. " - " .. title, message_duration)
         end
+    end
+end
+
+local function is_track_loved(artist, title)
+    if not username then return false end
+    
+    local query = "method=track.getInfo" ..
+                  "&api_key=" .. urlencode(api_key) ..
+                  "&artist=" .. urlencode(artist) ..
+                  "&track=" .. urlencode(title) ..
+                  "&username=" .. urlencode(username) ..
+                  "&format=json"
+    
+    local response, status = cliamp.http.get(API_URL .. "?" .. query)
+    
+    if tostring(status) == "200" then
+        local data = cliamp.json.decode(response)
+        if data and data.track and data.track.userloved == "1" then
+            return true
+        end
+    end
+    return false
+end
+
+local function unlove_track()
+    if not username or not session_key then
+        cliamp.message("[last.fm] Not configured", message_duration)
+        return
+    end
+    
+    local artist = cliamp.track.artist()
+    local title = cliamp.track.title()
+    
+    if not artist or not title then
+        cliamp.message("[last.fm] No track playing", message_duration)
+        return
+    end
+    
+    local params = {
+        method = "track.unlove",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title
+    }
+    
+    local sig = get_api_sig(params)
+    local body_str = "method=track.unlove" ..
+                     "&api_key=" .. urlencode(api_key) ..
+                     "&sk=" .. urlencode(session_key) ..
+                     "&artist=" .. urlencode(artist) ..
+                     "&track=" .. urlencode(title) ..
+                     "&api_sig=" .. urlencode(sig) ..
+                     "&format=json"
+    
+    local response, status = cliamp.http.post(API_URL, {
+        body = body_str,
+        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    })
+    
+    cliamp.log.debug("last.fm unlove response: status=" .. tostring(status) .. ", body=" .. tostring(response))
+    
+    if tostring(status) == "200" then
+        local data = cliamp.json.decode(response)
+        if data and (data.lfm == nil or next(data) == nil) then
+            cliamp.message("♡ Unloved: " .. artist .. " - " .. title, message_duration)
+        elseif data and data.error then
+            cliamp.log.warn("last.fm unlove failed: error code " .. tostring(data.error) .. " - " .. tostring(data.message))
+            cliamp.message("[last.fm] Error: " .. tostring(data.message), message_duration)
+        else
+            cliamp.log.warn("last.fm unlove unexpected response: " .. tostring(response))
+            cliamp.message("[last.fm] Unexpected response", message_duration)
+        end
+    else
+        local error_detail = "status=" .. tostring(status)
+        if response then
+            error_detail = error_detail .. ", response=" .. tostring(response)
+        end
+        cliamp.log.warn("last.fm unlove failed: " .. error_detail)
+        cliamp.message("[last.fm] Unable to unlove track now", message_duration)
+    end
+end
+
+local function love_track()
+    if not username or not session_key then
+        cliamp.message("[last.fm] Not configured", message_duration)
+        return
+    end
+    
+    local artist = cliamp.track.artist()
+    local title = cliamp.track.title()
+    
+    if not artist or not title then
+        cliamp.message("[last.fm] No track playing", message_duration)
+        return
+    end
+    
+    -- Check if track is already loved, toggle accordingly
+    if is_track_loved(artist, title) then
+        unlove_track()
+        return
+    end
+    
+    local params = {
+        method = "track.love",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title
+    }
+    
+    local sig = get_api_sig(params)
+    local body_str = "method=track.love" ..
+                     "&api_key=" .. urlencode(api_key) ..
+                     "&sk=" .. urlencode(session_key) ..
+                     "&artist=" .. urlencode(artist) ..
+                     "&track=" .. urlencode(title) ..
+                     "&api_sig=" .. urlencode(sig) ..
+                     "&format=json"
+    
+    local response, status = cliamp.http.post(API_URL, {
+        body = body_str,
+        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    })
+    
+    cliamp.log.debug("last.fm love response: status=" .. tostring(status) .. ", body=" .. tostring(response))
+    
+    if tostring(status) == "200" then
+        local data = cliamp.json.decode(response)
+        if data and data.lfm and data.lfm.status == "ok" then
+            cliamp.message("♥ Loved: " .. artist .. " - " .. title, message_duration)
+        elseif data and (data.lfm == nil or next(data) == nil) then
+            -- Empty response means success for track.love
+            cliamp.message("♥ Loved: " .. artist .. " - " .. title, message_duration)
+        elseif data and data.error then
+            cliamp.log.warn("last.fm love failed: error code " .. tostring(data.error) .. " - " .. tostring(data.message))
+            cliamp.message("[last.fm] Error: " .. tostring(data.message), message_duration)
+        else
+            cliamp.log.warn("last.fm love unexpected response: " .. tostring(response))
+            cliamp.message("[last.fm] Unexpected response", message_duration)
+        end
+    else
+        local error_detail = "status=" .. tostring(status)
+        if response then
+            error_detail = error_detail .. ", response=" .. tostring(response)
+        end
+        cliamp.log.warn("last.fm love failed: " .. error_detail)
+        cliamp.message("[last.fm] Unable to love track now", message_duration)
     end
 end
 
@@ -164,4 +313,13 @@ p:on("track.scrobble", function(track)
         has_scrobbled_current = true
     end
 end)
+
+-- Keybinding: * to love current track
+local success, reason = p:bind("*", "Love current track on last.fm", function(key)
+    love_track()
+end)
+
+if not success then
+    cliamp.log.warn("last.fm: failed to bind * - " .. tostring(reason))
+end
 

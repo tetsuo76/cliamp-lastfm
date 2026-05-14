@@ -13,6 +13,7 @@ local username = p:config("username")
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
 local has_scrobbled_current = false
 local session_scrobbles = 0
+local last_scrobble_time = 0
 local message_duration = 10
 
 -- Helper to safely handle properties vs functions
@@ -48,6 +49,25 @@ local function get_api_sig(params)
     return cliamp.crypto.md5(str)
 end
 
+local function build_query_string(params)
+    local parts = {}
+    for k, v in pairs(params) do
+        table.insert(parts, urlencode(k) .. "=" .. urlencode(v))
+    end
+    return table.concat(parts, "&")
+end
+
+local function build_post_body(params)
+    return build_query_string(params) .. "&format=json"
+end
+
+local function lastfm_post(params)
+    return cliamp.http.post(API_URL, {
+        body = build_post_body(params),
+        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    })
+end
+
 local function check_track_loved(track)
     if not username then return end
     
@@ -57,14 +77,14 @@ local function check_track_loved(track)
     if artist == "" or title == "" then return end
     
     -- Call track.getInfo to check if loved
-    local query = "method=track.getInfo" ..
-                  "&api_key=" .. urlencode(api_key) ..
-                  "&artist=" .. urlencode(artist) ..
-                  "&track=" .. urlencode(title) ..
-                  "&username=" .. urlencode(username) ..
-                  "&format=json"
-    
-    local response, status = cliamp.http.get(API_URL .. "?" .. query)
+    local response, status = cliamp.http.get(API_URL .. "?" .. build_query_string({
+        method = "track.getInfo",
+        api_key = api_key,
+        artist = artist,
+        track = title,
+        username = username,
+        format = "json",
+    }))
     
     if tostring(status) == "200" then
         local data = cliamp.json.decode(response)
@@ -77,14 +97,14 @@ end
 local function is_track_loved(artist, title)
     if not username then return false end
     
-    local query = "method=track.getInfo" ..
-                  "&api_key=" .. urlencode(api_key) ..
-                  "&artist=" .. urlencode(artist) ..
-                  "&track=" .. urlencode(title) ..
-                  "&username=" .. urlencode(username) ..
-                  "&format=json"
-    
-    local response, status = cliamp.http.get(API_URL .. "?" .. query)
+    local response, status = cliamp.http.get(API_URL .. "?" .. build_query_string({
+        method = "track.getInfo",
+        api_key = api_key,
+        artist = artist,
+        track = title,
+        username = username,
+        format = "json",
+    }))
     
     if tostring(status) == "200" then
         local data = cliamp.json.decode(response)
@@ -118,20 +138,14 @@ local function unlove_track()
     }
     
     local sig = get_api_sig(params)
-    local body_str = "method=track.unlove" ..
-                     "&api_key=" .. urlencode(api_key) ..
-                     "&sk=" .. urlencode(session_key) ..
-                     "&artist=" .. urlencode(artist) ..
-                     "&track=" .. urlencode(title) ..
-                     "&api_sig=" .. urlencode(sig) ..
-                     "&format=json"
-    
-    local response, status = cliamp.http.post(API_URL, {
-        body = body_str,
-        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    local response, status = lastfm_post({
+        method = "track.unlove",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title,
+        api_sig = sig,
     })
-    
-    cliamp.log.debug("last.fm unlove response: status=" .. tostring(status) .. ", body=" .. tostring(response))
     
     if tostring(status) == "200" then
         local data = cliamp.json.decode(response)
@@ -183,20 +197,14 @@ local function love_track()
     }
     
     local sig = get_api_sig(params)
-    local body_str = "method=track.love" ..
-                     "&api_key=" .. urlencode(api_key) ..
-                     "&sk=" .. urlencode(session_key) ..
-                     "&artist=" .. urlencode(artist) ..
-                     "&track=" .. urlencode(title) ..
-                     "&api_sig=" .. urlencode(sig) ..
-                     "&format=json"
-    
-    local response, status = cliamp.http.post(API_URL, {
-        body = body_str,
-        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    local response, status = lastfm_post({
+        method = "track.love",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title,
+        api_sig = sig,
     })
-    
-    cliamp.log.debug("last.fm love response: status=" .. tostring(status) .. ", body=" .. tostring(response))
     
     if tostring(status) == "200" then
         local data = cliamp.json.decode(response)
@@ -236,28 +244,28 @@ local function do_scrobble(track, timestamp)
     }
 
     local sig = get_api_sig(params)
-    local body_str = "method=track.scrobble" ..
-                     "&api_key=" .. urlencode(api_key) ..
-                     "&sk=" .. urlencode(session_key) ..
-                     "&artist=" .. urlencode(artist) ..
-                     "&track=" .. urlencode(title) ..
-                     "&timestamp=" .. urlencode(tostring(timestamp)) ..
-                     "&api_sig=" .. urlencode(sig) ..
-                     "&format=json"
-
-    -- Synchronous call returning response and status
-    local response, status = cliamp.http.post(API_URL, {
-        body = body_str,
-        headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+    local response, status = lastfm_post({
+        method = "track.scrobble",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title,
+        timestamp = tostring(timestamp),
+        api_sig = sig,
     })
 
     -- UI NOTIFICATION: Concise message at the bottom
+    last_scrobble_time = os.time()
     if tostring(status) == "200" then
         session_scrobbles = session_scrobbles + 1
         local stats = ""
         if username then
-            local query = "method=user.getInfo&api_key=" .. urlencode(api_key) .. "&user=" .. urlencode(username) .. "&format=json"
-            local response2, status2 = cliamp.http.get(API_URL .. "?" .. query)
+            local response2, status2 = cliamp.http.get(API_URL .. "?" .. build_query_string({
+                method = "user.getInfo",
+                api_key = api_key,
+                user = username,
+                format = "json",
+            }))
             local total_tracks = "?"
             local total_artists = "?"
             if tostring(status2) == "200" then
@@ -287,7 +295,19 @@ end
 -- Catch natural ends via playback position
 p:on("track.change", function(track)
     has_scrobbled_current = false
-    check_track_loved(track)
+
+    local delay = 0
+    if os.time() - last_scrobble_time < 3 then
+        delay = 2.5
+    end
+
+    if delay > 0 then
+        cliamp.timer.after(delay, function()
+            check_track_loved(track)
+        end)
+    else
+        check_track_loved(track)
+    end
 end)
 
 p:on("playback.state", function(data)

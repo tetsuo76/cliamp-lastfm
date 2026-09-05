@@ -37,17 +37,17 @@ function Print-Header {
 
 function Print-Success {
     param([string]$Message)
-    Write-Host "✓ $Message" -ForegroundColor Green
+    Write-Host "$([char]0x2713) $Message" -ForegroundColor Green
 }
 
 function Print-Error {
     param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
+    Write-Host "$([char]0x2717) $Message" -ForegroundColor Red
 }
 
 function Print-Info {
     param([string]$Message)
-    Write-Host "ℹ $Message" -ForegroundColor Cyan
+    Write-Host "$([char]0x2139) $Message" -ForegroundColor Cyan
 }
 
 function Print-Step {

@@ -80,12 +80,26 @@ function Get-ApiSig {
 function Open-Browser {
     param([string]$Url)
     try {
-        Start-Process $Url
+        $psi = New-Object System.Diagnostics.ProcessStartInfo $Url
+        $psi.UseShellExecute = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
         return $true
     }
     catch {
-        Print-Info "Please open this URL in your browser: $Url"
-        return $false
+        try {
+            Start-Process cmd.exe -ArgumentList "/c", "start", '""', "`"$Url`"" -WindowStyle Hidden
+            return $true
+        }
+        catch {
+            try {
+                Start-Process $Url
+                return $true
+            }
+            catch {
+                Print-Info "Please open this URL in your browser: $Url"
+                return $false
+            }
+        }
     }
 }
 
@@ -205,7 +219,10 @@ Print-Header
 # Step 1: Get API credentials
 Print-Step "Step 1: Last.fm API Credentials"
 Print-Info "Opening Last.fm API registration page..."
-[void](Open-Browser "https://www.last.fm/api/account/create")
+$regUrl = "https://www.last.fm/api/account/create"
+if (-not (Open-Browser $regUrl)) {
+    Print-Info "Please open this URL in your browser: $regUrl"
+}
 Write-Host ""
 Print-Info "Register a new application with any app name (ignore callback URL)"
 Print-Info "Copy your API Key and Secret"

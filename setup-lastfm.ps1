@@ -10,12 +10,12 @@
 [CmdletBinding()]
 param(
     [string]$ConfigFile = $(
-        if ($env:APPDATA -and (Test-Path (Join-Path $env:APPDATA "cliamp\config.toml"))) {
-            Join-Path $env:APPDATA "cliamp\config.toml"
+        if ($env:HOME -and (Test-Path (Join-Path $env:HOME "cliamp\config.toml"))) {
+            Join-Path $env:HOME "cliamp\config.toml"
         } elseif (Test-Path "$HOME\.config\cliamp\config.toml") {
             "$HOME\.config\cliamp\config.toml"
-        } elseif ($env:APPDATA) {
-            Join-Path $env:APPDATA "cliamp\config.toml"
+        } elseif ($env:HOME) {
+            Join-Path $env:HOME ".config\cliamp\config.toml"
         } else {
             "$HOME\.config\cliamp\config.toml"
         }

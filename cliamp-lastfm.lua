@@ -1,8 +1,8 @@
 local p = plugin.register({
     name = "lastfm",
     type = "hook",
-    version = "1.7.0",
-    description = "Scrobbles the current track to last.fm",
+    version = "1.8.0",
+    description = "Scrobbles to last.fm with now-playing + cached batch queue (live radio support)",
     permissions = {"keymap"},
 })
 
@@ -11,12 +11,41 @@ local api_secret = p:config("api_secret")
 local session_key = p:config("session_key")
 local username = p:config("username")
 
+local function to_bool(v, default)
+    if v == nil then return default end
+    if type(v) == "boolean" then return v end
+    local s = tostring(v):lower()
+    if s == "true" or s == "1" or s == "yes" then return true end
+    if s == "false" or s == "0" or s == "no" then return false end
+    return default
+end
+
+local function to_num(v, default)
+    local n = tonumber(v)
+    if n == nil then return default end
+    return n
+end
+
+local now_playing_enabled = to_bool(p:config("now_playing"), true)
+local live_enabled = to_bool(p:config("live_enabled"), true)
+local live_min_secs = to_num(p:config("live_min_secs"), 60)
+local flush_interval = to_num(p:config("flush_interval"), 60)
+local batch_size = to_num(p:config("batch_size"), 50)
+if batch_size < 1 then batch_size = 1 end
+if batch_size > 50 then batch_size = 50 end
+if flush_interval < 15 then flush_interval = 15 end
+
 local API_URL = "http://ws.audioscrobbler.com/2.0/"
 
 local has_scrobbled_current = false
 local session_scrobbles = 0
 local last_scrobble_time = 0
 local message_duration = 10
+local flushing = false
+local backoff_until = 0
+local live_seg = nil
+local last_np_key = nil
+local flush_queue -- forward declaration (defined below, used by live_close)
 
 -- last.fm modes:
 -- normal  = everything works, messages shown
@@ -118,6 +147,105 @@ local function lastfm_post(params)
         body = build_post_body(params),
         headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
     })
+end
+
+local function trim(s)
+    return (tostring(s or ""):match("^%s*(.-)%s*$") or "")
+end
+
+-- Split "Artist - Title" (Icecast-style stream titles). Returns "","" when
+-- there is no separator so callers can skip illegible live segments.
+local function split_stream_title(s)
+    s = trim(s)
+    if s == "" then return "", "" end
+    local a, b = s:match("^(.-)%s+%-%s+(.+)$")
+    if not a or not b then return "", "" end
+    return trim(a), trim(b)
+end
+
+local function queue_load()
+    local ok, q = pcall(cliamp.store.get, "queue")
+    if not ok then return {} end
+    if type(q) ~= "table" then return {} end
+    return q
+end
+
+local function queue_save(q)
+    pcall(cliamp.store.set, "queue", q)
+end
+
+local function queue_add(artist, title, album, timestamp)
+    artist, title = trim(artist), trim(title)
+    album = trim(album)
+    timestamp = math.floor(tonumber(timestamp) or os.time())
+    if artist == "" or title == "" then return false end
+    if not api_key or not api_secret or not session_key then
+        lastfm_message("[last.fm] Not configured", message_duration)
+        return false
+    end
+    local q = queue_load()
+    for _, e in ipairs(q) do
+        if e.artist == artist and e.track == title and e.timestamp == timestamp then
+            return false
+        end
+    end
+    table.insert(q, { artist = artist, track = title, album = album, timestamp = timestamp })
+    queue_save(q)
+    cliamp.log.debug("last.fm queued: " .. artist .. " - " .. title .. " (queue=" .. #q .. ")")
+    return true
+end
+
+local function update_now_playing(artist, title, album, duration)
+    if not lastfm_enabled() or not now_playing_enabled then return end
+    if not api_key or not api_secret or not session_key then return end
+    artist, title = trim(artist), trim(title)
+    if artist == "" or title == "" then return end
+    local key = artist .. "\0" .. title
+    if key == last_np_key then return end
+    last_np_key = key
+    local params = {
+        method = "track.updateNowPlaying",
+        api_key = api_key,
+        sk = session_key,
+        artist = artist,
+        track = title,
+    }
+    if trim(album) ~= "" then params.album = trim(album) end
+    local dur = math.floor(tonumber(duration) or 0)
+    if dur > 0 then params.duration = tostring(dur) end
+    local sig_params = {}
+    for k, v in pairs(params) do sig_params[k] = v end
+    params.api_sig = get_api_sig(sig_params)
+    local response, status = lastfm_post(params)
+    if tostring(status) ~= "200" then
+        cliamp.log.warn("last.fm now-playing failed: status=" .. tostring(status))
+        last_np_key = nil
+    else
+        cliamp.log.debug("last.fm now-playing: " .. artist .. " - " .. title)
+    end
+end
+
+-- Close the current live segment: scrobble it only if it played >= 60s.
+local function live_close()
+    local seg = live_seg
+    live_seg = nil
+    if not seg then return end
+    if not lastfm_enabled() or not live_enabled then return end
+    local elapsed = os.time() - (seg.start or os.time())
+    if elapsed >= live_min_secs and trim(seg.artist) ~= "" and trim(seg.title) ~= "" then
+        if queue_add(seg.artist, seg.title, seg.album, seg.start) then
+            cliamp.timer.after(2, flush_queue)
+        end
+    else
+        cliamp.log.debug("last.fm live segment skipped (<" .. live_min_secs .. "s or illegible)")
+    end
+end
+
+local function live_open(artist, title, album, path, duration)
+    artist, title = trim(artist), trim(title)
+    if artist == "" or title == "" then return end
+    live_seg = { artist = artist, title = title, album = trim(album), path = path, start = os.time() }
+    update_now_playing(artist, title, album, duration)
 end
 
 local function normalize_track_meta(track)
@@ -370,146 +498,81 @@ local function love_track()
     end
 end
 
+-- Enqueue a single scrobble and schedule a batch flush (replaces direct POST).
 local function do_scrobble(track, timestamp)
     if not lastfm_enabled() then return false end
 
-    local artist = track.artist or track.Artist or "Unknown"
-    local title = track.title or track.Title or "Unknown"
-    local album = track.album or track.Album or ""
-
-    local function post_scrobble_request(params)
-        local request_params = {}
-        for k, v in pairs(params) do
-            if k ~= "api_sig" then
-                request_params[k] = v
-            end
-        end
-
-        local sig = get_api_sig(request_params)
-        request_params.api_sig = sig
-
-        local response, status = lastfm_post(request_params)
-
-        local decoded = nil
-        pcall(function()
-            decoded = cliamp.json.decode(response)
-        end)
-        return response, status, decoded
+    local artist = trim(track.artist or track.Artist or "")
+    local title = trim(track.title or track.Title or "")
+    local album = trim(track.album or track.Album or "")
+    if artist == "" or title == "" then return false end
+    if queue_add(artist, title, album, timestamp) then
+        cliamp.timer.after(2, flush_queue)
+        return true
     end
+    return false
+end
 
+-- Batch flush: posts up to batch_size queued scrobbles in one request.
+-- Offline-friendly: failures keep the queue (5 min backoff); HTTP 200 with
+-- zero accepted (invalid entries) drops the batch to avoid poison loops.
+flush_queue = function()
+    if not lastfm_enabled() then return end
+    if flushing then return end
+    if os.time() < backoff_until then return end
+    if not api_key or not api_secret or not session_key then return end
+    local q = queue_load()
+    if #q == 0 then return end
+    flushing = true
+    local n = math.min(#q, batch_size)
+    local first = q[1]
     local params = {
         method = "track.scrobble",
         api_key = api_key,
         sk = session_key,
-        artist = artist,
-        track = title,
-        album = album,
-        timestamp = tostring(timestamp)
     }
-
-    local response, status, decoded = post_scrobble_request(params)
-    local accepted = decoded and decoded.scrobbles and decoded.scrobbles["@attr"] and tonumber(decoded.scrobbles["@attr"].accepted)
-    local ignored = decoded and decoded.scrobbles and decoded.scrobbles["@attr"] and tonumber(decoded.scrobbles["@attr"].ignored)
-    local ignored_code = decoded and decoded.scrobbles and decoded.scrobbles.scrobble and decoded.scrobbles.scrobble.ignoredMessage and decoded.scrobbles.scrobble.ignoredMessage.code
-
-    if tostring(status) == "200" and accepted == 0 and ignored == 1 and tostring(ignored_code) == "1" then
-        local retry_ts = timestamp - 10
-        if retry_ts ~= timestamp then
-            params.timestamp = tostring(retry_ts)
-            response, status, decoded = post_scrobble_request(params)
-            accepted = decoded and decoded.scrobbles and decoded.scrobbles["@attr"] and tonumber(decoded.scrobbles["@attr"].accepted)
-            ignored = decoded and decoded.scrobbles and decoded.scrobbles["@attr"] and tonumber(decoded.scrobbles["@attr"].ignored)
-        end
+    for i = 1, n do
+        local e = q[i]
+        local idx = tostring(i - 1)
+        params["artist[" .. idx .. "]"] = e.artist
+        params["track[" .. idx .. "]"] = e.track
+        params["album[" .. idx .. "]"] = e.album or ""
+        params["timestamp[" .. idx .. "]"] = tostring(e.timestamp)
     end
+    local sig_params = {}
+    for k, v in pairs(params) do sig_params[k] = v end
+    params.api_sig = get_api_sig(sig_params)
 
-    if tostring(status) == "200" and accepted == 1 then
+    local response, status = lastfm_post(params)
+    local decoded = nil
+    pcall(function() decoded = cliamp.json.decode(response) end)
+    local attr = decoded and decoded.scrobbles and decoded.scrobbles["@attr"]
+    local accepted = attr and tonumber(attr.accepted) or 0
+    local ignored = attr and tonumber(attr.ignored) or 0
+
+    if tostring(status) == "200" and accepted > 0 then
+        for _ = 1, accepted do table.remove(q, 1) end
+        queue_save(q)
         last_scrobble_time = os.time()
-        session_scrobbles = session_scrobbles + 1
-
-        local scrobble_count = get_track_scrobble_count(artist, title)
-        scrobble_count = (tonumber(scrobble_count) or 0) + 1
-
-        local total_tracks = "?"
-        local total_artists = "?"
-        local loved_count = "?"
-
-        if username then
-            local response2, status2 = lastfm_get(API_URL .. "?" .. build_query_string({
-                method = "user.getInfo",
-                api_key = api_key,
-                user = username,
-                format = "json",
-            }))
-
-            if tostring(status2) == "200" then
-                local data = cliamp.json.decode(response2)
-
-                if data and data.user then
-                    total_tracks = tostring(data.user.playcount or "?")
-                    total_artists = tostring(data.user.artist_count or "?")
-
-                    if total_tracks ~= "?" then
-                        total_tracks = format_number(tonumber(total_tracks))
-                    end
-
-                    if total_artists ~= "?" then
-                        total_artists = format_number(tonumber(total_artists))
-                    end
-                end
-            end
-
-            loved_count = get_user_loved_count()
-        end
-
-        scrobble_count = math.max(1, tonumber(scrobble_count) or 0)
-
-        local times_suffix = scrobble_count == 1 and " time" or " times"
-
-        local primary_message =
-            "Scrobble Sent: " ..
-            artist ..
-            " - " ..
-            title ..
-            " [Scrobbled: " ..
-            format_number(scrobble_count) ..
-            times_suffix ..
-            "]"
-
-        local stats_message =
-            "[Tracks: " ..
-            total_tracks ..
-            " | Artists: " ..
-            total_artists ..
-            " | Loved: " ..
-            loved_count ..
-            " | Session: " ..
-            format_number(session_scrobbles) ..
-            "]"
-
-        lastfm_message(primary_message, message_duration)
-
-        cliamp.timer.after(message_duration, function()
-            lastfm_message(stats_message, message_duration)
-        end)
-
-        return true
+        session_scrobbles = session_scrobbles + accepted
+        local label = first.artist .. " - " .. first.track
+        if accepted > 1 then label = label .. " (+" .. (accepted - 1) .. " more)" end
+        lastfm_message("Scrobble Sent (" .. accepted .. "): " .. label ..
+            " [Session: " .. format_number(session_scrobbles) .. ", Queued: " .. #q .. "]",
+            message_duration)
+    elseif tostring(status) == "200" then
+        for _ = 1, n do table.remove(q, 1) end
+        queue_save(q)
+        cliamp.log.warn("last.fm batch ignored by server (" .. tostring(ignored) ..
+            " ignored): " .. tostring(response))
+        lastfm_message("[last.fm] Scrobble ignored by server", message_duration)
     else
-        local error_detail = "status=" .. tostring(status)
-
-        if response then
-            error_detail = error_detail .. ", response=" .. tostring(response)
-        end
-
-        if tostring(status) == "200" and accepted == 0 then
-            cliamp.log.warn("last.fm scrobble ignored: " .. error_detail)
-            lastfm_message("[last.fm] Scrobble ignored by server", message_duration)
-        else
-            cliamp.log.warn("last.fm scrobble failed: " .. error_detail)
-            lastfm_message("[last.fm] Unable to scrobble now. Check your connection or last.fm status.", message_duration)
-        end
-
-        return false
+        backoff_until = os.time() + 300
+        cliamp.log.warn("last.fm batch failed (kept " .. #q .. " queued): status=" ..
+            tostring(status) .. ", response=" .. tostring(response))
+        lastfm_message("[last.fm] Offline? Kept " .. #q .. " queued, retry later.", message_duration)
     end
+    flushing = false
 end
 
 local function toggle_lastfm_mode()
@@ -527,13 +590,23 @@ local function toggle_lastfm_mode()
     end
 end
 
--- Catch natural ends via playback position
+-- Track change: close any previous live segment, publish now-playing,
+-- and check loved status. Live streams get their now-playing updates from
+-- playback.state as stream titles arrive.
 p:on("track.change", function(track)
     has_scrobbled_current = false
+    last_np_key = nil
+    live_close()
     current_track_artist, current_track_title = normalize_track_meta(track)
-    local track_path = track and track.path and tostring(track.path) or "<no path>"
 
     if not lastfm_enabled() then return end
+
+    local dur = tonumber(track and track.duration) or 0
+    local is_live = live_enabled and track and track.stream and dur == 0
+    if not is_live and current_track_artist ~= "" and current_track_title ~= "" then
+        update_now_playing(current_track_artist, current_track_title,
+            track.album or track.Album, dur)
+    end
 
     local delay = 0
 
@@ -576,6 +649,28 @@ p:on("playback.state", function(data)
         end
     end
 
+    -- Live radio: track stream-title segments. Each new title opens a segment
+    -- (with now-playing); the previous one is scrobbled if >= live_min_secs.
+    local is_live = live_enabled and dur == 0 and data.status == "playing"
+    if is_live then
+        local seg_artist = trim(data_artist ~= "" and data_artist or cliamp_artist)
+        local seg_title = trim(data_title ~= "" and data_title or cliamp_title)
+        if seg_artist == "" or seg_title == "" then
+            local st = data.stream_title or data.streamTitle or ""
+            seg_artist, seg_title = split_stream_title(st)
+        end
+        if seg_artist ~= "" and seg_title ~= "" then
+            current_track_artist, current_track_title = seg_artist, seg_title
+            if not live_seg or live_seg.artist ~= seg_artist or live_seg.title ~= seg_title then
+                live_close()
+                local seg_album = data.album or data.Album or ""
+                live_open(seg_artist, seg_title, seg_album, data.path)
+                check_track_loved({ artist = seg_artist, title = seg_title })
+            end
+        end
+        return
+    end
+
     local artist = current_artist or cliamp_artist or "<unknown artist>"
     local title = current_title or cliamp_title or "<unknown title>"
 
@@ -610,6 +705,26 @@ p:on("track.scrobble", function(track)
             has_scrobbled_current = true
         end
     end
+end)
+
+p:on("playback.stop", function()
+    last_np_key = nil
+    live_close()
+    flush_queue()
+end)
+
+p:on("app.quit", function()
+    live_close()
+    flush_queue()
+end)
+
+p:on("app.start", function()
+    local q = queue_load()
+    if #q > 0 then
+        cliamp.log.info("last.fm resuming with " .. #q .. " queued scrobbles")
+    end
+    cliamp.timer.every(flush_interval, flush_queue)
+    cliamp.timer.after(5, flush_queue)
 end)
 
 -- Keybinding: * to love/unlove current track
